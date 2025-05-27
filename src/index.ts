@@ -478,9 +478,24 @@ class JiraServer {
         if (error instanceof McpError) {
           throw error;
         }
+        
+        // Enhanced error handling with user intervention signals
+        const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
+        
+        // Check if this is a JIRA API error that might need user attention
+        if (errorMessage.includes("JIRA API Error")) {
+          // Add special markers to signal Claude should pause for user guidance
+          const enhancedMessage = `🚨 JIRA API ERROR - USER INTERVENTION REQUIRED 🚨\n\n${errorMessage}\n\n⚠️ This error suggests there may be a configuration, permission, or data issue that requires manual review. Please check the error details above and provide guidance on how to proceed.`;
+          
+          throw new McpError(
+            ErrorCode.InternalError,
+            enhancedMessage,
+          );
+        }
+        
         throw new McpError(
           ErrorCode.InternalError,
-          error instanceof Error ? error.message : "Unknown error occurred",
+          errorMessage,
         );
       }
     });

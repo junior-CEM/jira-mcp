@@ -49,8 +49,23 @@ export class JiraApiService {
       console.error("JIRA API Error Details:", details);
 
       const errorMessage = message ? `: ${message}` : "";
+      
+      // Categorize errors to help Claude understand the severity and type
+      let errorCategory = "";
+      if (response.status === 401) {
+        errorCategory = " [AUTHENTICATION_ERROR]";
+      } else if (response.status === 403) {
+        errorCategory = " [PERMISSION_ERROR]";
+      } else if (response.status === 404) {
+        errorCategory = " [NOT_FOUND_ERROR]";
+      } else if (response.status === 400) {
+        errorCategory = " [VALIDATION_ERROR]";
+      } else if (response.status >= 500) {
+        errorCategory = " [SERVER_ERROR]";
+      }
+      
       throw new Error(
-        `JIRA API Error${errorMessage} (Status: ${response.status})`
+        `JIRA API Error${errorCategory}${errorMessage} (Status: ${response.status})\nDetails: ${details}`
       );
     }
 
@@ -384,7 +399,7 @@ export class JiraApiService {
         issuetype: {
           name: issueType,
         },
-        ...(description && { description }),
+        ...(description && { description: this.createAdfFromBody(description) }),
         ...fields,
       },
     };
@@ -399,10 +414,17 @@ export class JiraApiService {
     issueKey: string,
     fields: Record<string, any>
   ): Promise<void> {
-    await this.fetchJson(`/rest/api/3/issue/${issueKey}`, {
+    const response = await fetch(this.baseUrl + `/rest/api/3/issue/${issueKey}`, {
       method: "PUT",
+      headers: this.headers,
       body: JSON.stringify({ fields }),
     });
+
+    if (!response.ok) {
+      await this.handleFetchError(response, `/rest/api/3/issue/${issueKey}`);
+    }
+
+    // JIRA update returns 204 No Content with empty body, so don't try to parse JSON
   }
 
   async getTransitions(
@@ -449,10 +471,17 @@ export class JiraApiService {
       };
     }
 
-    await this.fetchJson(`/rest/api/3/issue/${issueKey}/transitions`, {
+    const response = await fetch(this.baseUrl + `/rest/api/3/issue/${issueKey}/transitions`, {
       method: "POST",
+      headers: this.headers,
       body: JSON.stringify(payload),
     });
+
+    if (!response.ok) {
+      await this.handleFetchError(response, `/rest/api/3/issue/${issueKey}/transitions`);
+    }
+
+    // JIRA transition returns 204 No Content with empty body, so don't try to parse JSON
   }
 
   async addAttachment(
