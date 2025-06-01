@@ -256,6 +256,88 @@ class JiraServer {
             additionalProperties: false,
           },
         },
+        {
+          name: "get_fields",
+          description: "Get all available fields in the JIRA instance",
+          inputSchema: {
+            type: "object",
+            properties: {},
+            additionalProperties: false,
+          },
+        },
+        {
+          name: "get_create_meta",
+          description: "Get field metadata for creating issues in a project",
+          inputSchema: {
+            type: "object",
+            properties: {
+              projectKey: {
+                type: "string",
+                description: "The project key to get metadata for",
+              },
+              issueType: {
+                type: "string",
+                description: "Optional issue type to filter metadata",
+              },
+            },
+            required: ["projectKey"],
+            additionalProperties: false,
+          },
+        },
+        {
+          name: "get_edit_meta",
+          description: "Get field metadata for editing a specific issue",
+          inputSchema: {
+            type: "object",
+            properties: {
+              issueKey: {
+                type: "string",
+                description: "The key of the issue to get edit metadata for",
+              },
+            },
+            required: ["issueKey"],
+            additionalProperties: false,
+          },
+        },
+        {
+          name: "find_story_points_field",
+          description: "Find the story points field ID for a project and issue type",
+          inputSchema: {
+            type: "object",
+            properties: {
+              projectKey: {
+                type: "string",
+                description: "The project key to search in",
+              },
+              issueType: {
+                type: "string",
+                description: "The issue type (default: Story)",
+                default: "Story",
+              },
+            },
+            required: ["projectKey"],
+            additionalProperties: false,
+          },
+        },
+        {
+          name: "update_story_points",
+          description: "Update story points for a user story (automatically finds the correct field)",
+          inputSchema: {
+            type: "object",
+            properties: {
+              issueKey: {
+                type: "string",
+                description: "The key of the issue to update",
+              },
+              storyPoints: {
+                type: "number",
+                description: "The story points value to set",
+              },
+            },
+            required: ["issueKey", "storyPoints"],
+            additionalProperties: false,
+          },
+        },
       ],
     }));
 
@@ -467,6 +549,99 @@ class JiraServer {
               ],
             };
           }
+          case "get_fields": {
+            const response = await this.jiraApi.getFields();
+            return {
+              content: [
+                { type: "text", text: JSON.stringify(response, null, 2) },
+              ],
+            };
+          }
+          case "get_create_meta": {
+            if (!args.projectKey || typeof args.projectKey !== "string") {
+              throw new McpError(
+                ErrorCode.InvalidParams,
+                "projectKey is required",
+              );
+            }
+            const response = await this.jiraApi.getCreateMeta(
+              args.projectKey,
+              args.issueType as string | undefined,
+            );
+            return {
+              content: [
+                { type: "text", text: JSON.stringify(response, null, 2) },
+              ],
+            };
+          }
+          case "get_edit_meta": {
+            if (!args.issueKey || typeof args.issueKey !== "string") {
+              throw new McpError(
+                ErrorCode.InvalidParams,
+                "issueKey is required",
+              );
+            }
+            const response = await this.jiraApi.getEditMeta(args.issueKey);
+            return {
+              content: [
+                { type: "text", text: JSON.stringify(response, null, 2) },
+              ],
+            };
+          }
+          case "find_story_points_field": {
+            if (!args.projectKey || typeof args.projectKey !== "string") {
+              throw new McpError(
+                ErrorCode.InvalidParams,
+                "projectKey is required",
+              );
+            }
+            const response = await this.jiraApi.findStoryPointsField(
+              args.projectKey,
+              args.issueType as string | undefined,
+            );
+            return {
+              content: [
+                { 
+                  type: "text", 
+                  text: JSON.stringify({
+                    projectKey: args.projectKey,
+                    issueType: args.issueType || "Story",
+                    storyPointsFieldId: response,
+                    found: response !== null
+                  }, null, 2) 
+                },
+              ],
+            };
+          }
+          case "update_story_points": {
+            if (
+              !args.issueKey ||
+              typeof args.issueKey !== "string" ||
+              typeof args.storyPoints !== "number"
+            ) {
+              throw new McpError(
+                ErrorCode.InvalidParams,
+                "issueKey and storyPoints are required",
+              );
+            }
+            await this.jiraApi.updateStoryPoints(args.issueKey, args.storyPoints);
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify(
+                    { 
+                      message: `Story points updated successfully for issue ${args.issueKey}`,
+                      issueKey: args.issueKey,
+                      storyPoints: args.storyPoints
+                    },
+                    null,
+                    2,
+                  ),
+                },
+              ],
+            };
+          }
           default:
             throw new McpError(
               ErrorCode.MethodNotFound,
@@ -484,8 +659,24 @@ class JiraServer {
         
         // Check if this is a JIRA API error that might need user attention
         if (errorMessage.includes("JIRA API Error")) {
+          let guidanceMessage = "";
+          
+          if (errorMessage.includes("[AUTHENTICATION_ERROR]")) {
+            guidanceMessage = "\n\n🔑 AUTHENTICATION ISSUE: Please verify your JIRA_API_TOKEN and JIRA_USER_EMAIL environment variables are correct.";
+          } else if (errorMessage.includes("[PERMISSION_ERROR]")) {
+            guidanceMessage = "\n\n🚫 PERMISSION ISSUE: Your account may not have sufficient permissions for this operation. Please check with your JIRA administrator.";
+          } else if (errorMessage.includes("[NOT_FOUND_ERROR]")) {
+            guidanceMessage = "\n\n❓ RESOURCE NOT FOUND: The requested issue, project, or resource does not exist or is not accessible.";
+          } else if (errorMessage.includes("[VALIDATION_ERROR]")) {
+            guidanceMessage = "\n\n📝 VALIDATION ERROR: The request data is invalid. Please check the field values and try again.";
+          } else if (errorMessage.includes("[SERVER_ERROR]")) {
+            guidanceMessage = "\n\n🏥 SERVER ERROR: JIRA server is experiencing issues. This may be temporary - consider retrying later.";
+          } else {
+            guidanceMessage = "\n\n⚠️ This error suggests there may be a configuration, permission, or data issue that requires manual review.";
+          }
+          
           // Add special markers to signal Claude should pause for user guidance
-          const enhancedMessage = `🚨 JIRA API ERROR - USER INTERVENTION REQUIRED 🚨\n\n${errorMessage}\n\n⚠️ This error suggests there may be a configuration, permission, or data issue that requires manual review. Please check the error details above and provide guidance on how to proceed.`;
+          const enhancedMessage = `🚨 JIRA API ERROR - USER INTERVENTION REQUIRED 🚨\n\n${errorMessage}${guidanceMessage}\n\n⏸️ Please review the error details above and provide guidance on how to proceed.`;
           
           throw new McpError(
             ErrorCode.InternalError,

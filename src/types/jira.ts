@@ -15,6 +15,7 @@ export interface CleanJiraIssue {
   created: string | undefined;
   updated: string | undefined;
   description: string;
+  storyPoints?: number | null;
   comments?: CleanComment[];
   parent?: {
     id: string;

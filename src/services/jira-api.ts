@@ -180,6 +180,11 @@ export class JiraApiService {
       relatedIssues: [],
     };
 
+    // Include story points if available (commonly customfield_10016 but can vary)
+    if (issue.fields?.customfield_10016 !== undefined) {
+      cleanedIssue.storyPoints = issue.fields.customfield_10016;
+    }
+
     if (issue.fields?.description?.content) {
       const mentions = this.extractIssueMentions(
         issue.fields.description.content,
@@ -264,6 +269,7 @@ export class JiraApiService {
         "parent",
         "subtasks",
         "customfield_10014",
+        "customfield_10016",
         "issuelinks",
       ].join(","),
       expand: "names,renderedFields",
@@ -292,6 +298,7 @@ export class JiraApiService {
         "parent",
         "subtasks",
         "customfield_10014",
+        "customfield_10016",
         "issuelinks",
       ].join(","),
       expand: "names,renderedFields",
@@ -338,6 +345,7 @@ export class JiraApiService {
         "parent",
         "subtasks",
         "customfield_10014",
+        "customfield_10016",
         "issuelinks",
       ].join(","),
       expand: "names,renderedFields",
@@ -567,5 +575,146 @@ export class JiraApiService {
       updated: response.updated,
       body: this.extractTextContent(response.body.content),
     };
+  }
+
+  /**
+   * Get all available fields in the JIRA instance
+   */
+  async getFields(): Promise<Array<{
+    id: string;
+    name: string;
+    custom: boolean;
+    schema?: any;
+  }>> {
+    return this.fetchJson<Array<{
+      id: string;
+      name: string;
+      custom: boolean;
+      schema?: any;
+    }>>("/rest/api/3/field");
+  }
+
+  /**
+   * Get field metadata for creating issues in a specific project and issue type
+   */
+  async getCreateMeta(
+    projectKey: string,
+    issueType?: string
+  ): Promise<any> {
+    const params = new URLSearchParams({
+      projectKeys: projectKey,
+      expand: "projects.issuetypes.fields",
+    });
+    
+    if (issueType) {
+      params.set("issuetypeNames", issueType);
+    }
+
+    return this.fetchJson<any>(`/rest/api/3/issue/createmeta?${params}`);
+  }
+
+  /**
+   * Get field metadata for editing a specific issue
+   */
+  async getEditMeta(issueKey: string): Promise<any> {
+    return this.fetchJson<any>(`/rest/api/3/issue/${issueKey}/editmeta`);
+  }
+
+  /**
+   * Find the story points field ID for a given project and issue type
+   */
+  async findStoryPointsField(
+    projectKey: string,
+    issueType = "Story"
+  ): Promise<string | null> {
+    try {
+      // First try to get create metadata for the project/issue type
+      const createMeta = await this.getCreateMeta(projectKey, issueType);
+      
+      if (createMeta.projects?.length > 0) {
+        const project = createMeta.projects[0];
+        const storyIssueType = project.issuetypes?.find(
+          (it: any) => it.name.toLowerCase() === issueType.toLowerCase()
+        );
+        
+        if (storyIssueType?.fields) {
+          // Look for common story points field names
+          const storyPointsFieldNames = [
+            "story points",
+            "storypoints", 
+            "story point estimate",
+            "estimate",
+            "points"
+          ];
+          
+          for (const [fieldId, fieldInfo] of Object.entries(storyIssueType.fields)) {
+            const field = fieldInfo as any;
+            const fieldName = field.name?.toLowerCase() || "";
+            
+            if (storyPointsFieldNames.some(name => fieldName.includes(name))) {
+              return fieldId;
+            }
+          }
+        }
+      }
+      
+      // Fallback: try common story points field IDs
+      const commonStoryPointsFields = [
+        "customfield_10002",
+        "customfield_10016", 
+        "customfield_10020",
+        "customfield_10026",
+        "customfield_10004",
+        "customfield_10008"
+      ];
+      
+      // Try to get an existing story to test these fields
+      const searchResult = await this.searchIssues(`project = ${projectKey} AND issuetype = "${issueType}"`);
+      if (searchResult.issues.length > 0) {
+        const testIssueKey = searchResult.issues[0].key;
+        
+        // Get the full issue details to check which custom fields exist
+        const fullIssue = await this.fetchJson<any>(`/rest/api/3/issue/${testIssueKey}?expand=names`);
+        
+        for (const fieldId of commonStoryPointsFields) {
+          if (fullIssue.names && fullIssue.names[fieldId]) {
+            const fieldName = fullIssue.names[fieldId].toLowerCase();
+            if (fieldName.includes("story") && fieldName.includes("point")) {
+              return fieldId;
+            }
+          }
+        }
+      }
+      
+      return null;
+    } catch (error) {
+      console.error("Error finding story points field:", error);
+      return null;
+    }
+  }
+
+  /**
+   * Update story points for an issue (automatically finds the correct field)
+   */
+  async updateStoryPoints(
+    issueKey: string,
+    storyPoints: number
+  ): Promise<void> {
+    // Extract project key from issue key (e.g., "ACI-11" -> "ACI")
+    const projectKey = issueKey.split('-')[0];
+    
+    // Find the story points field for this project
+    const storyPointsFieldId = await this.findStoryPointsField(projectKey, "Story");
+    
+    if (!storyPointsFieldId) {
+      throw new Error(`Story points field not found for project ${projectKey}. Please check if story points are configured for this project and issue type.`);
+    }
+    
+    // Update the issue with the story points value
+    const fields = {
+      [storyPointsFieldId]: storyPoints
+    };
+    
+    await this.updateIssue(issueKey, fields);
   }
 }
